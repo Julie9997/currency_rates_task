@@ -1,72 +1,108 @@
 package org.julie;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
 import java.io.IOException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import okhttp3.HttpUrl;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
+import java.net.URL;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Scanner;
 
 public class CurrencyRatesApp {
+
     public static void main(String[] args) {
-        if (args.length != 2) {
-            System.out.println("Использование: java CurrencyRatesApp --code=USD --date=2022-10-08");
-            return;
-        }
-
-        String code = null;
-        String date = null;
-
-        for (String arg : args) {
-            if (arg.startsWith("--code=")) {
-                code = arg.substring(7);
-            } else if (arg.startsWith("--date=")) {
-                date = arg.substring(7);
-            }
-        }
-
-        if (code == null || date == null) {
-            System.out.println("Необходимо указать параметры --code и --date");
-            return;
-        }
-
         try {
-            String currencyName = getCurrencyName(code, date);
-            System.out.println(currencyName);
-        } catch (IOException e) {
-            System.out.println("Произошла ошибка при получении данных: " + e.getMessage());
+            Scanner scanner = new Scanner(System.in);
+            System.out.print("Введите код валюты (например USD): ");
+            String currencyCode = scanner.nextLine();
+
+            System.out.print("Введите дату в формате (dd/MM/yyyy): ");
+            String dateString = scanner.nextLine();
+
+            SimpleDateFormat dateFormat = new SimpleDateFormat("dd/MM/yyyy");
+            Date date = dateFormat.parse(dateString);
+
+            URL cbrUrl = new URL("http://www.cbr.ru/scripts/XML_daily.asp?date_req=" + dateString);
+            CurrencyInfo currencyInfo = convertCurrency(cbrUrl, currencyCode);
+            System.out.println(currencyCode + " (" + currencyInfo.getName() + "): " + currencyInfo.getRate());
+        } catch (IOException | ParserConfigurationException |
+                 SAXException | XPathExpressionException e) {
+            e.printStackTrace();
+        } catch (Exception e) {
+            System.out.println("Error: " + e.getMessage());
         }
     }
 
-    private static String getCurrencyName(String code, String date) throws IOException {
-        String url = "https://www.cbr.ru/scripts/XML_daily.asp";
-        OkHttpClient httpClient = new OkHttpClient();
+    public static CurrencyInfo convertCurrency(URL url, String currencyCode)
+            throws IOException,
+            ParserConfigurationException,
+            SAXException,
+            XPathExpressionException {
 
-        HttpUrl.Builder urlBuilder = HttpUrl.parse(url).newBuilder();
-        urlBuilder.addQueryParameter("date_req", date);
+        DocumentBuilder documentBuilder = DocumentBuilderFactory
+                .newInstance()
+                .newDocumentBuilder();
+        Document document = documentBuilder.parse(url.openStream());
+        XPath xPath = XPathFactory.newInstance().newXPath();
 
-        Request request = new Request.Builder()
-                .url(urlBuilder.build())
-                .build();
+        String expressionCurrency =
+                "/ValCurs/Valute[CharCode='" + currencyCode + "']";
 
-        try (Response response = httpClient.newCall(request).execute()) {
-            String responseBody = response.body().string();
+        Node nodeCurrency = (Node) xPath.compile(expressionCurrency)
+                .evaluate(document, XPathConstants.NODE);
 
-            // Преобразование XML в JSON для удобства обработки данных
-            ObjectMapper objectMapper = new ObjectMapper();
-            JsonNode rootNode = objectMapper.readTree(responseBody.getBytes("UTF-8"));
-            JsonNode valuteNode = rootNode.findValue("Valute");
+        NodeList nodesCurrency = nodeCurrency.getChildNodes();
 
-            for (JsonNode currency : valuteNode) {
-                String charCode = currency.findValue("CharCode").asText();
-                if (charCode.equals(code)) {
-                    String name = currency.findValue("Name").asText();
-                    String value = currency.findValue("Value").asText();
-                    return code + " (" + name + "): " + value;
-                }
+        String name = searchName(nodesCurrency);
+        float courseCurrency = searchCourse(nodesCurrency);
+        float nominalCurrency = searchNominal(nodesCurrency);
+
+        return new CurrencyInfo(name, courseCurrency / nominalCurrency);
+    }
+
+    private static String searchName(NodeList nodes) {
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Node n = nodes.item(i);
+            if (n.getNodeName().equals("Name")) {
+                return n.getChildNodes().item(0).getTextContent();
             }
         }
+        return "";
+    }
 
-        return "Курс для валюты с кодом " + code + " за " + date + " не найден.";
+    private static float searchCourse(NodeList nodes) {
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Node n = nodes.item(i);
+            if (n.getNodeName().equals("Value")) {
+                return Float.parseFloat(n.getChildNodes()
+                        .item(0)
+                        .getTextContent()
+                        .replace(",", "."));
+            }
+        }
+        return 0f;
+    }
+
+    private static float searchNominal(NodeList nodes) {
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Node n = nodes.item(i);
+            if (n.getNodeName().equals("Nominal")) {
+                return Float.parseFloat(n.getChildNodes()
+                        .item(0)
+                        .getTextContent());
+            }
+        }
+        return 0f;
     }
 }
+
